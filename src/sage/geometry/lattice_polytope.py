@@ -2736,6 +2736,48 @@ class LatticePolytopeClass(SageObject, collections.Hashable):
         skeleton.sort()
         return skeleton
 
+    def blowup_points(self, include_origin=False):
+        r"""
+        Return the points belonging to faces of codimension > 1.
+        Unlike the other methods of this class, this returns a list of
+        vectors instead of a matrix.
+
+        INPUT:
+        
+           
+        -  ``include_origin`` - (default: False) if ``True`` then
+           the origin is included in the list of points.
+
+        """
+        indices = self.skeleton_points(self.dim()-2)
+        if include_origin:
+            indices += [self.origin()]
+        all_pts = self.points().columns()
+        pts = [all_pts[i] for i in indices]    
+        return pts
+
+    def hodge_numbers(self):
+        r"""
+        Return the hodge numbers of the Calabi-Yau realized
+        as a hypersurface inside this lattice polytope.
+        """
+        if not self.is_reflexive():
+            raise Exception('The lattice polytope must be reflexive.')
+        if self.dim() < 4:
+            raise NotImplementedError('The polytope must at least be 4-dimensional.')
+
+        output = self.poly_x('')
+        output = output.split(':')[-1].split()[0].split(',')
+        output.reverse()
+        return map(int, output)
+
+    def h11(self):
+        r"""
+        Return the hodge number $h^{1,1}$ of the Calabi-Yau realized
+        as a hypersurface inside this lattice polytope.
+        """
+        return self.hodge_numbers()[0]
+
     def skeleton_show(self, normal=None):
         r"""Show the graph of one-skeleton of this polytope.
         Works only for polytopes in a 3-dimensional space.

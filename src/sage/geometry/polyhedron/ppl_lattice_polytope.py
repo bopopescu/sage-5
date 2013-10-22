@@ -289,6 +289,59 @@ class LatticePolytope_PPL_class(C_Polyhedron):
         """
         return self.affine_dimension()+1==self.n_vertices()
 
+    def is_isomorphic(self, other):
+        r"""
+        Test if ``self`` and ``polytope`` are isomorphic.
+
+        INPUT:
+
+        - ``polytope`` -- a lattice polytope.
+
+        OUTPUT:
+
+        Boolean.
+        """
+        if other.vertices() == self.vertices():
+            return True
+        if len(other.vertices()) != len(self.vertices()):
+            return False
+        if other.affine_dimension() != self.affine_dimension():
+            return False
+        if other.n_integral_points() != self.n_integral_points():
+            return False
+        # This is a terribly lazy way of doing things:
+        return other.affine_normal_form() == self.affine_normal_form()
+
+    @cached_method
+    def affine_normal_form(self, **kwds):
+        r"""
+        Return the affine normal form of ``self``.
+
+        OUTPUT:
+ 
+        A matrix with the vertices in normal form.
+        """
+        # This is a terrible way of doing things
+        # but for now it's the simplest thing to do
+        from sage.geometry.lattice_polytope import LatticePolytope
+        lp = LatticePolytope(self.vertices())
+        return lp.affine_normal_form(ignore_embedding = True)
+    
+    @cached_method
+    def normal_form(self):
+        r"""
+        Return the normal form of ``self``.
+
+        OUTPUT:
+ 
+        A matrix with the vertices in normal form.
+        """
+        # This is a terrible way of doing things
+        # but for now it's the simplest thing to do
+        from sage.geometry.lattice_polytope import LatticePolytope
+        lp = LatticePolytope(self.vertices())
+        return lp.normal_form(ignore_embedding = True)
+
     @cached_method
     def bounding_box(self):
         r"""
@@ -1126,6 +1179,63 @@ class LatticePolytope_PPL_class(C_Polyhedron):
             sub = list(pointset.difference([v]))
             yield LatticePolytope_PPL(*sub)
 
+    def sub_polytopes(self, minimum_dimension=0):
+        """
+        Returns a list of all lattice sub-polygons up to isomorphsm.
+
+        OUTPUT:
+
+        All non-empty sub-lattice polytopes up to isomorphism. This
+        includes ``self`` as improper sub-polytope, but excludes the
+        empty polytope. Isomorphic sub-polytopes that can be embedded
+        in different places are only returned once.
+
+        EXAMPLES::
+
+            sage: from sage.geometry.polyhedron.ppl_lattice_polytope import LatticePolytope_PPL
+            sage: P1xP1 = LatticePolytope_PPL((1,0), (0,1), (-1,0), (0,-1))
+            sage: P1xP1.sub_polytopes()
+            (A 2-dimensional lattice polytope in ZZ^2 with 4 vertices,
+             A 2-dimensional lattice polytope in ZZ^2 with 3 vertices,
+             A 2-dimensional lattice polytope in ZZ^2 with 3 vertices,
+             A 1-dimensional lattice polytope in ZZ^2 with 2 vertices,
+             A 1-dimensional lattice polytope in ZZ^2 with 2 vertices,
+             A 0-dimensional lattice polytope in ZZ^2 with 1 vertex)
+        """
+        # Our own caching to eventually allow for pickling
+        def compute_sub_polytopes(min_dimension, max_dimension=None):
+            if max_dimension is None:
+                max_dimension = self.affine_dimension()
+                self._sub_polytopes = {max_dimension:[self]}
+                todo = list(self._sub_polytopes[max_dimension])
+            else:
+                self._sub_polytopes[max_dimension] = list()
+                todo = list(self._sub_polytopes[max_dimension + 1])
+            for i in range(min_dimension, max_dimension):
+                self._sub_polytopes[i] = list()
+            while todo:
+                polytope = todo.pop()
+                for p in polytope.sub_polytope_generator():
+                    if p.is_empty():
+                        continue
+                    d = p.affine_dimension()
+                    if p.affine_dimension() < min_dimension or d > max_dimension:
+                        continue
+                    if any(p.is_isomorphic(q) for q in self._sub_polytopes[d]):
+                        continue
+                    self._sub_polytopes[d].append(p)
+                    todo.append(p)
+        
+        if not hasattr(self, "_sub_polytopes"):
+            compute_sub_polytopes(minimum_dimension)
+        elif min(self._sub_polytopes.keys()) > minimum_dimension:
+            maximum_dimension = min(self._sub_polytopes.keys()) - 1
+            compute_sub_polytopes(minimum_dimension, maximum_dimension)
+        result = list()
+        for i in range(self.affine_dimension(), minimum_dimension - 1, -1):
+            result.extend(self._sub_polytopes[i])
+        return result
+
     @cached_method
     def _find_isomorphism_to_subreflexive_polytope(self):
         """
@@ -1251,5 +1361,30 @@ class LatticePolytope_PPL_class(C_Polyhedron):
         else:
             raise ValueError('output='+str(output)+' is not valid.')
 
+    def has_embedding_of(self, polytope):
+        r"""
+        Check whether ``self`` has an embedding of ``polytope``.
 
+        Iterates through all subpolytopes of ``self`` and checks
+        whether one of them is isomorphic to ``polytope``.
+
+        INPUT:
+
+        - ``polytope`` -- LatticePolytope_PPL, the lattice polytope
+                          that one wants to embed
+
+        OUTPUT:
+        
+        Boolean, whether or not there exists an embedding.
+        """
+        # For now disallow everything of lower dimension
+        if polytope.affine_dimension() <> self.affine_dimension():
+            raise ValueError('The polytopes must both have the same dimension.')
+        sub_polytopes = self.sub_polytopes(minimum_dimension = polytope.affine_dimension())
+        for q in sub_polytopes:
+            if polytope.is_isomorphic(q):
+                return (True, q)
+        return False
+        # This is the quick way
+        return any(polytope.is_isomorphic(q) for q in sub_polytopes)
 

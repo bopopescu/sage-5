@@ -361,42 +361,6 @@ class LatticePolygon_PPL_class(LatticePolytope_PPL_class):
         except LatticePolytopesNotIsomorphicError:
             return False
 
-    def sub_polytopes(self):
-        """
-        Returns a list of all lattice sub-polygons up to isomorphsm.
-
-        OUTPUT:
-
-        All non-empty sub-lattice polytopes up to isomorphism. This
-        includes ``self`` as improper sub-polytope, but excludes the
-        empty polytope. Isomorphic sub-polytopes that can be embedded
-        in different places are only returned once.
-
-        EXAMPLES::
-
-            sage: from sage.geometry.polyhedron.ppl_lattice_polytope import LatticePolytope_PPL
-            sage: P1xP1 = LatticePolytope_PPL((1,0), (0,1), (-1,0), (0,-1))
-            sage: P1xP1.sub_polytopes()
-            (A 2-dimensional lattice polytope in ZZ^2 with 4 vertices,
-             A 2-dimensional lattice polytope in ZZ^2 with 3 vertices,
-             A 2-dimensional lattice polytope in ZZ^2 with 3 vertices,
-             A 1-dimensional lattice polytope in ZZ^2 with 2 vertices,
-             A 1-dimensional lattice polytope in ZZ^2 with 2 vertices,
-             A 0-dimensional lattice polytope in ZZ^2 with 1 vertex)
-        """
-        subpolytopes = [self]
-        todo = list(subpolytopes)
-        while todo:
-            polytope = todo.pop()
-            for p in polytope.sub_polytope_generator():
-                if p.is_empty():
-                    continue
-                if any(p.is_isomorphic(q) for q in subpolytopes):
-                    continue
-                subpolytopes.append(p)
-                todo.append(p)
-        return tuple(subpolytopes)
-
     def plot(self):
         """
         Plot the lattice polygon

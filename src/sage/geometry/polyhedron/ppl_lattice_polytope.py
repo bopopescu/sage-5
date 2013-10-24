@@ -289,7 +289,7 @@ class LatticePolytope_PPL_class(C_Polyhedron):
         """
         return self.affine_dimension()+1==self.n_vertices()
 
-    def is_isomorphic(self, other):
+    def is_isomorphic(self, other, check_affine=True):
         r"""
         Test if ``self`` and ``polytope`` are isomorphic.
 
@@ -310,7 +310,10 @@ class LatticePolytope_PPL_class(C_Polyhedron):
         if other.n_integral_points() != self.n_integral_points():
             return False
         # This is a terribly lazy way of doing things:
-        return other.affine_normal_form() == self.affine_normal_form()
+        if check_affine:
+            return other.affine_normal_form() == self.affine_normal_form()
+        else:
+            return other.normal_form() == self.normal_form()
 
     @cached_method
     def affine_normal_form(self, **kwds):
@@ -327,7 +330,6 @@ class LatticePolytope_PPL_class(C_Polyhedron):
         lp = LatticePolytope(self.vertices())
         return lp.affine_normal_form(ignore_embedding = True)
     
-    @cached_method
     def normal_form(self):
         r"""
         Return the normal form of ``self``.
@@ -338,9 +340,11 @@ class LatticePolytope_PPL_class(C_Polyhedron):
         """
         # This is a terrible way of doing things
         # but for now it's the simplest thing to do
-        from sage.geometry.lattice_polytope import LatticePolytope
-        lp = LatticePolytope(self.vertices())
-        return lp.normal_form(ignore_embedding = True)
+        if not hasattr(self, "_nf"):
+            from sage.geometry.lattice_polytope import LatticePolytope
+            lp = LatticePolytope(self.vertices())
+            self._nf = lp.normal_form(ignore_embedding = True)
+        return self._nf
 
     @cached_method
     def bounding_box(self):
@@ -1181,7 +1185,7 @@ class LatticePolytope_PPL_class(C_Polyhedron):
 
     def sub_polytopes(self, minimum_dimension=0):
         """
-        Returns a list of all lattice sub-polygons up to isomorphsm.
+        Returns a list of all lattice sub-polytopes up to isomorphsm.
 
         OUTPUT:
 
@@ -1215,13 +1219,14 @@ class LatticePolytope_PPL_class(C_Polyhedron):
                 self._sub_polytopes[i] = list()
             while todo:
                 polytope = todo.pop()
-                for p in polytope.sub_polytope_generator():
-                    if p.is_empty():
-                        continue
+                # The easiest fix is this one
+                sub_polys = [p for p in polytope.sub_polytope_generator() if not p.is_empty()]
+                _compute_normal_forms(sub_polys)
+                for p in sub_polys:
                     d = p.affine_dimension()
                     if p.affine_dimension() < min_dimension or d > max_dimension:
                         continue
-                    if any(p.is_isomorphic(q) for q in self._sub_polytopes[d]):
+                    if any(p.is_isomorphic(q, False) for q in self._sub_polytopes[d]):
                         continue
                     self._sub_polytopes[d].append(p)
                     todo.append(p)
@@ -1235,6 +1240,98 @@ class LatticePolytope_PPL_class(C_Polyhedron):
         for i in range(self.affine_dimension(), minimum_dimension - 1, -1):
             result.extend(self._sub_polytopes[i])
         return result
+
+    def sub_polytopes_fast(self, verbose=True, max_batch=5000, sequential_saving=None):
+        r"""
+        Compute all subpolytopes of ``self``.
+
+        And do it fast!
+        """
+        if not hasattr(self, "_sub_polytopes"):
+            import hashlib
+            from sage.misc.misc import cputime, walltime
+            from sage.functions.other import ceil
+            # Compute subpolytopes
+            todo = [self]
+            d = self.affine_dimension()
+            n_pts = self.n_integral_points()
+            hashes = [dict() for i in range(n_pts)]
+            if verbose:
+                t1, t2 = cputime(), walltime()
+            n_found = 1
+
+            if sequential_saving:
+                # Do not forget to save the first one, too
+                from sage.structure.sage_object import save
+                ms = [matrix(self.vertices()).transpose()]
+                save(ms, sequential_saving + '_' + str(n_pts))
+
+            while n_pts:
+                n_pts -= 1
+                n_set = len(todo)
+                if verbose:
+                    print 'The set with', n_pts, 'integral points has', n_set, 'polytopes.'
+
+                # Ha! We can simply compute the subpolytopes of all polytopes in todo
+                # But let's slice this up into smaller batches
+                n_batches = ceil(n_set / float(max_batch))
+                if verbose:
+                    print 'The set is split up into', n_batches, 'batches.'
+                batches = [todo[max_batch*k:max_batch*(k + 1)] for k in range(n_batches)]
+                todo = []
+                for k, batch in enumerate(batches):
+                    if verbose:
+                        print "  Batch", k + 1, ":"
+                    
+                    # For now, only keep maximal dimensional ones
+                    sub_polys = [p for q in batch for p in q.sub_polytope_generator() \
+                                 if not p.is_empty() and p.affine_dimension() == d]
+                    if verbose:
+                        t1, t2 = cputime(t1), walltime(t2)
+                        print '    Assembled list of length', len(sub_polys), ':', round(t1, 4), round(t2, 4)
+
+                    _compute_normal_forms(sub_polys)
+                    if verbose:
+                        t1, t2 = cputime(t1), walltime(t2)
+                        print '    Computed normal forms:', round(t1, 4), round(t2, 4)
+
+                    for p in sub_polys:
+                        # We refine our dictionaries by numbers of points
+                        h = hashlib.md5(p.normal_form().str()).hexdigest()
+                        if hashes[n_pts].has_key(h):
+                            continue
+                        hashes[n_pts][h] = p
+                        n_found += 1
+                        todo.append(p)
+                    if verbose:
+                        t1, t2 = cputime(t1), walltime(t2)
+                        print '    Compared and hashed them:', round(t1, 4), round(t2, 4)
+
+                if sequential_saving:
+                    from sage.structure.sage_object import save
+                    # Save every set to the disc separately
+                    # Save as matrices
+                    polys = hashes[n_pts].values()
+                    ms = [matrix(p.vertices()).transpose() for p in polys]
+                    # Free space
+                    hashes[n_pts] = dict()
+                    del polys
+                    save(ms, sequential_saving + '_' + str(n_pts))
+                    if verbose:
+                        print 'Saved.'
+
+                if verbose:
+                    print
+
+            if sequential_saving:
+                print 'Found ' + str(n_found) + ' subpolytopes.'
+                return
+            else:
+                self._sub_polytopes = [self] + [j for i in hashes for j in i.values()]
+        if isinstance(self._sub_polytopes, dict):
+            return self.sub_polytopes(3)
+        else:
+            return self._sub_polytopes
 
     @cached_method
     def _find_isomorphism_to_subreflexive_polytope(self):
@@ -1388,3 +1485,34 @@ class LatticePolytope_PPL_class(C_Polyhedron):
         # This is the quick way
         return any(polytope.is_isomorphic(q) for q in sub_polytopes)
 
+
+##############################################################################
+# Methods to deal with large lists of PPLs at the same time                  #
+##############################################################################
+def _compute_normal_forms(polytopes):
+    r"""
+    Compute the affine normal forms for all ``polytopes``.
+
+    This is much, much faster than calling the individual method
+    affine_normal_form()
+    """
+    from sage.geometry.lattice_polytope import _palp, read_palp_matrix
+    # We can only handle those with maximal dimension at the moment
+    def skip_polytope(p):
+        if hasattr(p, "_nf"):
+            return True
+        else:
+            return p.affine_dimension() <> p.space_dimension()
+    polytopes = [i for i in polytopes if not skip_polytope(i)]
+    if not polytopes:
+        return
+    vertices = [matrix(p.vertices()).transpose() for p in polytopes]
+    path = _palp('poly.x -fN', vertices=vertices)
+    f = open(path)
+    for p in polytopes:
+        m = read_palp_matrix(f)
+        m.set_immutable()
+        if not m:
+            raise ValueError("Empty normal form returned.")
+        p._nf = m
+    f.close()

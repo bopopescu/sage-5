@@ -326,9 +326,11 @@ class LatticePolytope_PPL_class(C_Polyhedron):
         """
         # This is a terrible way of doing things
         # but for now it's the simplest thing to do
-        from sage.geometry.lattice_polytope import LatticePolytope
-        lp = LatticePolytope(self.vertices())
-        return lp.affine_normal_form(ignore_embedding = True)
+        if not hasattr(self, "_anf"):
+            from sage.geometry.lattice_polytope import LatticePolytope
+            lp = LatticePolytope(self.vertices())
+            self._anf = lp.affine_normal_form(ignore_embedding = True)
+        return self._anf
     
     def normal_form(self):
         r"""
@@ -1241,7 +1243,8 @@ class LatticePolytope_PPL_class(C_Polyhedron):
             result.extend(self._sub_polytopes[i])
         return result
 
-    def sub_polytopes_fast(self, verbose=True, max_batch=5000, sequential_saving=None):
+    def sub_polytopes_fast(self, verbose=True, max_batch=5000,
+                           return_vertices_only=False, sequential_saving=None):
         r"""
         Compute all subpolytopes of ``self``.
 
@@ -1251,11 +1254,28 @@ class LatticePolytope_PPL_class(C_Polyhedron):
             import hashlib
             from sage.misc.misc import cputime, walltime
             from sage.functions.other import ceil
-            # Compute subpolytopes
-            todo = [self]
+
+            def process_poly(poly, force_process = False):
+                if return_vertices_only or force_process:
+                    m = matrix(poly.vertices()).transpose()
+                    m.set_immutable()
+                    return m
+                else:
+                    return poly
+
             d = self.affine_dimension()
+            if d <> self.space_dimension():
+                raise ValueError('At the moment we can only compute the'\
+                               + 'subpolytopes of full dimensional polytopes.')
+
             n_pts = self.n_integral_points()
-            hashes = [dict() for i in range(n_pts)]
+            # Sort hashes by dimension and by number of integral points
+            hashes = [[dict() for i in range(n_pts)] for j in range(d + 1)]
+
+            # Add self
+            s = hashlib.md5(self.normal_form().str()).hexdigest()            
+            hashes[d][n_pts - 1][s] = process_poly(self)
+            todo = [self]
             if verbose:
                 t1, t2 = cputime(), walltime()
             n_found = 1
@@ -1264,7 +1284,7 @@ class LatticePolytope_PPL_class(C_Polyhedron):
                 # Do not forget to save the first one, too
                 from sage.structure.sage_object import save
                 ms = [matrix(self.vertices()).transpose()]
-                save(ms, sequential_saving + '_' + str(n_pts))
+                save(ms, sequential_saving +  '_' + str(dim) + '_' + str(n_pts))
 
             while n_pts:
                 n_pts -= 1
@@ -1283,9 +1303,8 @@ class LatticePolytope_PPL_class(C_Polyhedron):
                     if verbose:
                         print "  Batch", k + 1, ":"
                     
-                    # For now, only keep maximal dimensional ones
                     sub_polys = [p for q in batch for p in q.sub_polytope_generator() \
-                                 if not p.is_empty() and p.affine_dimension() == d]
+                                 if not p.is_empty()]
                     if verbose:
                         t1, t2 = cputime(t1), walltime(t2)
                         print '    Assembled list of length', len(sub_polys), ':', round(t1, 4), round(t2, 4)
@@ -1296,11 +1315,11 @@ class LatticePolytope_PPL_class(C_Polyhedron):
                         print '    Computed normal forms:', round(t1, 4), round(t2, 4)
 
                     for p in sub_polys:
-                        # We refine our dictionaries by numbers of points
                         h = hashlib.md5(p.normal_form().str()).hexdigest()
-                        if hashes[n_pts].has_key(h):
+                        relevant_hashes = hashes[p.affine_dimension()][n_pts - 1]
+                        if relevant_hashes.has_key(h):
                             continue
-                        hashes[n_pts][h] = p
+                        relevant_hashes[h] = process_poly(p)
                         n_found += 1
                         todo.append(p)
                     if verbose:
@@ -1311,12 +1330,14 @@ class LatticePolytope_PPL_class(C_Polyhedron):
                     from sage.structure.sage_object import save
                     # Save every set to the disc separately
                     # Save as matrices
-                    polys = hashes[n_pts].values()
-                    ms = [matrix(p.vertices()).transpose() for p in polys]
-                    # Free space
-                    hashes[n_pts] = dict()
-                    del polys
-                    save(ms, sequential_saving + '_' + str(n_pts))
+                    for dim in range(d+1):
+                        polys = hashes[dim][n_pts - 1].values()
+                        if not return_vertices_only:
+                            polys = [process_poly(i, force_process=True) for i in polys]
+                        save(polys, sequential_saving + '_' + str(dim) + '_' + str(n_pts))
+                        del polys
+                        # Free space
+                        hashes[dim][n_pts - 1] = dict()
                     if verbose:
                         print 'Saved.'
 
@@ -1327,11 +1348,9 @@ class LatticePolytope_PPL_class(C_Polyhedron):
                 print 'Found ' + str(n_found) + ' subpolytopes.'
                 return
             else:
-                self._sub_polytopes = [self] + [j for i in hashes for j in i.values()]
-        if isinstance(self._sub_polytopes, dict):
-            return self.sub_polytopes(3)
-        else:
-            return self._sub_polytopes
+                self._sub_polytopes = hashes
+
+        return self._sub_polytopes
 
     @cached_method
     def _find_isomorphism_to_subreflexive_polytope(self):
@@ -1491,28 +1510,181 @@ class LatticePolytope_PPL_class(C_Polyhedron):
 ##############################################################################
 def _compute_normal_forms(polytopes):
     r"""
-    Compute the affine normal forms for all ``polytopes``.
+    Compute the normal forms for all ``polytopes``.
 
     This is much, much faster than calling the individual method
-    affine_normal_form()
+    normal_form()
     """
     from sage.geometry.lattice_polytope import _palp, read_palp_matrix
-    # We can only handle those with maximal dimension at the moment
-    def skip_polytope(p):
-        if hasattr(p, "_nf"):
-            return True
-        else:
-            return p.affine_dimension() <> p.space_dimension()
-    polytopes = [i for i in polytopes if not skip_polytope(i)]
-    if not polytopes:
-        return
-    vertices = [matrix(p.vertices()).transpose() for p in polytopes]
-    path = _palp('poly.x -fN', vertices=vertices)
-    f = open(path)
+
+    def _compute_full_dim(polys):
+        if not polys:
+            return
+        vertices = [matrix(p.vertices()).transpose() for p in polys]
+        path = _palp('poly.x -fN', vertices=vertices)
+        f = open(path)
+        for p in polys:
+            m = read_palp_matrix(f)
+            m.set_immutable()
+            if not m:
+                raise ValueError("Empty normal form returned.")
+            p._nf = m
+        f.close()
+
+    def _compute_codim(polys):
+        add_origins = []
+        vertices = []
+        # Bring the vertices into desired form
+        relevant_polys = []
+        for p in polys:
+            v = matrix(ZZ, p.vertices())
+            # A workaround for polytopes with vertices at origin
+            if v.is_zero():
+                m = matrix([[0]])
+                m.set_immutable()
+                p._nf = m
+                continue
+            embedding = v.image().basis_matrix()
+            codim_embedding = embedding.ncols() - embedding.nrows()
+            codim = p.space_dimension() - p.affine_dimension()
+            add_origin = codim_embedding <> codim
+            preimages = [embedding.solve_left(i) for i in v.rows()]
+            if add_origin:
+                preimages += [vector(embedding.nrows()*[0])]
+            vertices.append(matrix(preimages).transpose())
+            add_origins.append(add_origin)
+            relevant_polys.append(p)
+        # Process them
+        if not relevant_polys:
+            return
+        path = _palp('poly.x -fN', vertices=vertices)
+        del vertices
+        f = open(path)
+        # The afterwards treatment
+        for p, add_origin in zip(polys, add_origins):
+            m = read_palp_matrix(f)
+            if not m:
+                raise ValueError("Empty normal form returned.")
+            cols = [i for i in m.columns() if not add_origin or not i.is_zero()]
+            m = matrix(cols).transpose()
+            m.set_immutable()
+            p._nf = m
+        f.close()
+
+    polys_full_dim = []
+    polys_codim = []
     for p in polytopes:
-        m = read_palp_matrix(f)
-        m.set_immutable()
-        if not m:
-            raise ValueError("Empty normal form returned.")
-        p._nf = m
-    f.close()
+        if hasattr(p, "_nf"):
+            continue
+        if p.affine_dimension() <> p.space_dimension():
+            polys_codim.append(p)
+        else:
+            polys_full_dim.append(p)
+
+    _compute_full_dim(polys_full_dim)
+    _compute_codim(polys_codim)
+
+def _compute_affine_normal_forms(polytopes):
+    r"""
+    Compute the normal forms for all ``polytopes``.
+
+    This is much, much faster than calling the individual method
+    normal_form()
+    """
+    from sage.geometry.lattice_polytope import _palp, read_palp_matrix
+    from copy import copy
+
+    def translated_vertices(p):
+        v = matrix(ZZ, p.vertices()).transpose()
+        r = []
+        for i in range(v.ncols()):
+            tmp = copy(v)
+            for j in range(v.ncols()):
+                if i == j:
+                    continue
+                tmp.add_multiple_of_column(j, i, -1)
+            tmp.add_multiple_of_column(i, i, -1)
+            r.append(tmp)
+        return r
+
+    def _compute_full_dim(polys):
+        if not polys:
+            return
+        # Prepare the vertices
+        n_vertices = []
+        vertices = []
+        for p in polys:
+            tmp = translated_vertices(p)
+            n_vertices.append(len(tmp))
+            vertices += tmp
+        path = _palp('poly.x -fN', vertices=vertices)
+        del vertices
+        f = open(path)
+        for p, n in zip(polys, n_vertices):
+            tmp = []
+            for i in range(n):
+                m = read_palp_matrix(f)
+                if not m:
+                    raise ValueError("Empty normal form returned.")
+                m.set_immutable()
+                tmp.append(m)
+            # Ours is the maximum            
+            p._anf = min(tmp)
+        f.close()
+
+    def _compute_codim(polys):
+        n_vertices = []
+        vertices = []
+        relevant_polys = []
+        # Filter out one vertex polytopes and translate vertices
+        for p in polys:
+            if p.n_vertices() == 1:
+                m = matrix([[0]])
+                m.set_immutable()
+                p._anf = m
+                continue
+            tmp = translated_vertices(p)
+            n_vertices.append(len(tmp))
+            vertices += tmp
+            relevant_polys.append(p)
+
+        embedded_vertices = []
+        for v in vertices:
+            v = v.transpose()
+            embedding = v.image().basis_matrix()
+            codim_embedding = embedding.ncols() - embedding.nrows()
+            preimages = [embedding.solve_left(i) for i in v.rows()]
+            embedded_vertices.append(matrix(preimages).transpose())
+        vertices = embedded_vertices
+
+        # Process them
+        if not relevant_polys:
+            return
+        path = _palp('poly.x -fN', vertices=vertices)
+        del vertices
+        f = open(path)
+        # The afterwards treatment
+        for p, n in zip(relevant_polys, n_vertices):
+            tmp = []
+            for i in range(n):
+                m = read_palp_matrix(f)
+                if not m:
+                    raise ValueError("Empty normal form returned.")
+                m.set_immutable()
+                tmp.append(m)
+            # Ours is the maximum            
+            p._anf = max(tmp)
+        f.close()
+
+    polys_full_dim = []
+    polys_codim = []
+    for p in polytopes:
+        if hasattr(p, "_anf"):
+            continue
+        if p.affine_dimension() <> p.space_dimension():
+            polys_codim.append(p)
+        else:
+            polys_full_dim.append(p)
+
+    _compute_full_dim(polys_full_dim)
+    _compute_codim(polys_codim)

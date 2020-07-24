@@ -70,7 +70,7 @@ class SageDevWrapper(object):
         sage: config['trac']['password'] = 'secret'
         sage: dev = DoctestSageDevWrapper(config, server)
         sage: UI = dev._UI
-        sage: dev._pull_master_branch()
+        sage: dev._pull_main_branch()
         sage: dev._chdir()
 
     ``create_ticket`` silently fails for a wrapper::
@@ -216,7 +216,7 @@ class SageDevWrapper(object):
                     UI.info("You can try to restore your repository to a clean state by"
                             " running {0} and {1}.",
                             self._sagedev._format_command("clean"), 
-                            self._sagedev._format_command("checkout", branch="master"))
+                            self._sagedev._format_command("checkout", branch="main"))
                     raise
                 except InvalidStateError as e:
                     UI.error("Unexpectedly your repository was found to be in a"
